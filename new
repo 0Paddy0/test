@@ -1,0 +1,63 @@
+# Define variables
+$bufferSize = 4MB  # 4MB in bytes
+$chunkSize = 100 * $bufferSize  # Size of each chunk
+$filePath = "C:\Test\largefile.dat"
+$threads = @()
+$doneEvents = @()
+$fileSize = 50GB  # 50GB in bytes
+
+# Create file and set its size
+$stream = [System.IO.File]::Create($filePath)
+$stream.SetLength($fileSize)
+$stream.Close()
+
+# Define chunking function
+function Split-File {
+    param (
+        [byte[]]$Buffer,
+        [int]$BufferSize,
+        [string]$FilePath,
+        [long]$Start,
+        [long]$End,
+        [System.Threading.ManualResetEvent]$DoneEvent
+    )
+    
+    $localStream = [System.IO.File]::OpenWrite($FilePath)
+    $localStream.Seek($Start, [System.IO.SeekOrigin]::Begin)
+
+    $bytesToWrite = $End - $Start
+    while ($bytesToWrite -gt 0) {
+        $writeLength = [Math]::Min($BufferSize, $bytesToWrite)
+        $localStream.Write($Buffer, 0, $writeLength)
+        $bytesToWrite -= $writeLength
+    }
+
+    $localStream.Close()
+    $DoneEvent.Set()
+}
+
+# Initialize buffer with ones
+$buffer = New-Object byte[] $bufferSize
+for ($i = 0; $i -lt $buffer.Length; $i++) { $buffer[$i] = 1 }
+
+# Start chunking
+for ($i = 0; $i -lt $fileSize; $i += $chunkSize) {
+    $start = $i
+    $end = [long][Math]::Min([long]$i + $chunkSize, $fileSize)
+
+    $doneEvent = New-Object System.Threading.ManualResetEvent($false)
+    $threadStart = [System.Threading.ParameterizedThreadStart]{
+        Split-File -Buffer $args[0] -BufferSize $args[1] -FilePath $args[2] -Start $args[3] -End $args[4] -DoneEvent $args[5]
+    }
+    $thread = New-Object System.Threading.Thread($threadStart)
+    $thread.Start(@($buffer, $buffer.Length, $filePath, $start, $end, $doneEvent))
+    $threads += $thread
+    $doneEvents += $doneEvent
+}
+
+# Wait for all threads to complete without using WaitAll
+foreach ($thread in $threads) {
+    $thread.Join()
+}
+
+Write-Host "Finished writing $fileSize bytes to $filePath."
